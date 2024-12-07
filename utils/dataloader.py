@@ -70,10 +70,6 @@ class WSDREAM_1_InfoDataset(WSDREAM_1_DatasetBase):
         self.info_data = self.get_row_data()
         self._fit()
 
-    # @property
-    # def feature_list(self):
-    #     return [self.query(i) for i in tqdm(range(1, self.info_data.shape[0]), "process data...")]
-
     @property
     def _is_available_columns(self):
         return set(self.enabled_columns).issubset(set(self.info_data.columns.tolist()))

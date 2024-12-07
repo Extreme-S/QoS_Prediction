@@ -203,6 +203,6 @@ def build_sim_mat(rat_mat):
     item_sim_mat = 1 - cdist(rat_mat.T, rat_mat.T, metric="cosine")
 
     # 确保对角线元素为0（因为自身与自身的相似度为0）
-    np.fill_diagonal(user_sim_mat, 0)
-    np.fill_diagonal(item_sim_mat, 0)
+    np.fill_diagonal(user_sim_mat, 1)
+    np.fill_diagonal(item_sim_mat, 1)
     return user_sim_mat, item_sim_mat

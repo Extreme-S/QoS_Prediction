@@ -17,7 +17,7 @@ class ModelBase(object):
         super().__init__()
         self.loss_fn = loss_fn  # 损失函数
         self.optimizer = None
-        self.device = "cuda" if (use_gpu and torch.cuda.is_available()) else "cpu"
+        self.device = "cuda:0" if (use_gpu and torch.cuda.is_available()) else "cpu"
         self.name = self.__class__.__name__
         self.logger = myLog(self.name)  # 日志
         self.logger.initial_logger()
@@ -33,7 +33,58 @@ class ModelBase(object):
         # tensorboard.configure(argv=[None, '--logdir', save_dir])
         # tensorboard.launch()
 
+    # 训练epoch
+    def train_epoch(self, train_loader, optimizer):
+        self.model.train()
+        total_loss = 0
+        for batch in train_loader:
+            users, items, ratings = batch[0].to(self.device), batch[1].to(self.device), batch[2].to(self.device)
+            y_pred, y_real = self.model(users, items), ratings.reshape(-1, 1)
+            loss = self.loss_fn(y_pred, y_real)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+        return total_loss / len(train_loader)
+
+    # 验证eval_loader
+    def evaluate(self, eval_loader):
+        self.model.eval()
+        total_loss = 0
+        with torch.no_grad():
+            for batch_id, batch in tqdm(enumerate(eval_loader), position=0, leave=True):
+                user, item, rating = batch[0].to(self.device), batch[1].to(self.device), batch[2].to(self.device)
+                y_pred, y_real = self.model(user, item), rating.reshape(-1, 1)
+                loss = self.loss_fn(y_pred, y_real)
+                total_loss += loss.item()
+        return total_loss / len(eval_loader)
+
     def fit(self, train_loader, epochs, optimizer, eval_=True, eval_loader=None, save_model=True, save_filename=""):
+        self.model.to(self.device)
+        best_loss = float("inf")
+        for epoch in tqdm(range(epochs), position=0, leave=True):
+            train_loss = self.train_epoch(train_loader, optimizer)
+            self.logger.info(f"Training Epoch:[{epoch + 1}/{epochs}] Loss:{train_loss:.8f}")
+            self.writer.add_scalar("Training Loss", train_loss, epoch + 1)
+
+            if (epoch + 1) % 10 == 0:
+                eval_loss = self.evaluate(eval_loader)
+                self.logger.info(f"Eval loss: {eval_loss}")
+                self.writer.add_scalar("Eval loss", eval_loss, epoch)
+
+                is_best, best_loss = (eval_loss < best_loss), min(best_loss, eval_loss)
+                ckpt = {
+                    "model": self.model.state_dict(),
+                    "epoch": epoch + 1,
+                    "optim": optimizer.state_dict(),
+                    "best_loss": best_loss,
+                }
+                save_checkpoint(ckpt, is_best, f"output/{self.name}/{self.date}", f"{save_filename}={best_loss:.4f}.ckpt")
+                self.saved_model_ckpt.append(ckpt)
+
+    def fit2(self, train_loader, epochs, optimizer, eval_=True, eval_loader=None, save_model=True, save_filename=""):
         """Eval为True: 自动保存最优模型（推荐）, save_model为True: 间隔epoch后自动保存模型
 
         Args:
@@ -58,8 +109,7 @@ class ModelBase(object):
             eval_total_loss = 0
             for batch_id, batch in enumerate(train_loader):
                 users, items, ratings = batch[0].to(self.device), batch[1].to(self.device), batch[2].to(self.device)
-                y_real = ratings.reshape(-1, 1)
-                y_pred = self.model(users, items)
+                y_pred, y_real = self.model(users, items), ratings.reshape(-1, 1)
                 loss = self.loss_fn(y_pred, y_real)
 
                 self.optimizer.zero_grad()
@@ -75,33 +125,24 @@ class ModelBase(object):
             self.writer.add_scalar("Training Loss", loss_per_epoch, epoch + 1)
 
             # 验证
-            if (epoch + 1) % 10 == 0:
+            # if (epoch + 1) % 10 == 0:
+            if False:
                 if eval_ == True:
                     assert eval_loader is not None, "Please offer eval dataloader"
                     self.model.eval()
                     with torch.no_grad():
                         for batch_id, batch in tqdm(enumerate(eval_loader), position=0, leave=True):
-                            user, item, rating = (
-                                batch[0].to(self.device),
-                                batch[1].to(self.device),
-                                batch[2].to(self.device),
-                            )
-                            y_pred = self.model(user, item)
-                            y_real = rating.reshape(-1, 1)
+                            user, item, rating = batch[0].to(self.device), batch[1].to(self.device), batch[2].to(self.device)
+                            y_pred, y_real = self.model(user, item), rating.reshape(-1, 1)
                             loss = self.loss_fn(y_pred, y_real)
                             eval_total_loss += loss.item()
-                        loss_per_epoch = eval_total_loss / len(eval_loader)
 
-                        if best_loss is None:
-                            best_loss = loss_per_epoch
-                            is_best = True
-                        elif loss_per_epoch < best_loss:
-                            best_loss = loss_per_epoch
-                            is_best = True
-                        else:
-                            is_best = False
+                        loss_per_epoch = eval_total_loss / len(eval_loader)
                         eval_loss_list.append(loss_per_epoch)
-                        self.logger.info(f"Test loss: {loss_per_epoch}")
+                        is_best = loss_per_epoch < best_loss if best_loss is not None else True  # 是否目前最好loss的标记位
+                        best_loss = min(best_loss, loss_per_epoch) if best_loss is not None else loss_per_epoch  # 目前为止最优的loss值
+
+                        self.logger.info(f"Eval loss: {loss_per_epoch}")
                         self.writer.add_scalar("Eval loss", loss_per_epoch, epoch)
                         # 保存最优的loss
                         if is_best:
@@ -116,8 +157,8 @@ class ModelBase(object):
                         save_checkpoint(
                             ckpt,
                             is_best,
-                            f"output/{self.name}/{self.date}_{save_filename}/saved_model",
-                            f"{save_filename}_loss_{best_loss:.4f}.ckpt",
+                            f"output/{self.name}/{self.date}",
+                            f"{save_filename}={best_loss:.4f}.ckpt",
                         )
                         self.saved_model_ckpt.append(ckpt)
 
@@ -131,8 +172,8 @@ class ModelBase(object):
                     save_checkpoint(
                         ckpt,
                         save_model,
-                        f"output/{self.name}/{self.date}_{save_filename}/saved_model",
-                        f"{save_filename}_loss_{loss_per_epoch:.4f}.ckpt",
+                        f"output/{self.name}/{self.date}",
+                        f"{save_filename}={best_loss:.4f}.ckpt",
                     )
                     self.saved_model_ckpt.append(ckpt)
 
